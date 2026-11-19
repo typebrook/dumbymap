@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DumbyMap – Coordinate Reference Systems</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="./dist/css/style.css">
+  <link rel="stylesheet" href="./dist/css/dumbymap.css">
+</head>
+<body style="height: 100vh;">
+  <div id="app" class="DumbyMap"></div>
+
+  <script type="text/markdown" id="md-content">
+# CRS: TWD97 / TM2 (EPSG:3826)
+
+This page uses **EPSG:3826** (Taiwan Datum 97, 2° TM projection).
+All coordinates are in **metres** (easting, northing).
+
+Click any of the geo-links below to pan the map to that location.
+
+
+## Landmarks
+
+- Taipei 101: 302762,2768268
+- National Palace Museum: 299617,2775337
+- Sun Moon Lake: 240464,2660651
+- Taroko Gorge: 319418,2693007
+
+
+## Get coordinates
+
+Right-click on the map → **Get coordinates** to copy the clicked point's
+TWD97 coordinates to clipboard.
+
+
+## Map
+
+```map
+use: Maplibre
+center: [121.5645, 25.0338]
+zoom: 8
+```
+  </script>
+
+  <script type="module">
+    import { generateMaps } from './dist/dumbymap.mjs'
+
+    const container = document.getElementById('app')
+    generateMaps(container, {
+      markdown: document.getElementById('md-content').textContent,
+      crs: 'EPSG:3826'
+    })
+  </script>
+</body>
+</html>

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>JSDoc: Source: markdown.mjs</title>
+
+    <script src="scripts/prettify/prettify.js"> </script>
+    <script src="scripts/prettify/lang-css.js"> </script>
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <link type="text/css" rel="stylesheet" href="styles/prettify-tomorrow.css">
+    <link type="text/css" rel="stylesheet" href="styles/jsdoc-default.css">
+</head>
+
+<body>
+
+<div id="main">
+
+    <h1 class="page-title">Source: markdown.mjs</h1>
+
+    
+
+
+
+    
+    <section>
+        <article>
+            <pre class="prettyprint source linenums"><code>import MarkdownIt from 'markdown-it'
+import MarkdownItAnchor from 'markdown-it-anchor'
+import MarkdownItFootnote from 'markdown-it-footnote'
+import MarkdownItFrontMatter from 'markdown-it-front-matter'
+import MarkdownItInjectLinenumbers from 'markdown-it-inject-linenumbers'
+import MarkdownItAttrs from 'markdown-it-attrs'
+
+const UNWRAP_TAGS = new Set(['div', 'article', 'section', 'main', 'header', 'footer'])
+const SKIP_TAGS = new Set(['nav', 'aside'])
+
+const needsYamlQuote = s => {
+  if (s === '') return true
+  if (/^(true|false|null|yes|no|on|off)$/i.test(s)) return true
+  if (/^[\d\-{[?:,#&amp;*!|>'"%@`]/.test(s)) return true
+  if (/:\s|#/.test(s) || /\n/.test(s)) return true
+  return false
+}
+
+const jsonToYaml = (val, indent = 0) => {
+  const pad = '  '.repeat(indent)
+  if (val === null) return 'null'
+  if (typeof val === 'boolean' || typeof val === 'number') return String(val)
+  if (typeof val === 'string') return needsYamlQuote(val) ? JSON.stringify(val) : val
+  if (Array.isArray(val)) {
+    if (val.length === 0) return '[]'
+    return val.map(v => {
+      const s = jsonToYaml(v, indent + 1)
+      return typeof v === 'object' &amp;&amp; v !== null
+        ? `${pad}-\n${s}`
+        : `${pad}- ${s}`
+    }).join('\n')
+  }
+  // object
+  const keys = Object.keys(val)
+  if (keys.length === 0) return '{}'
+  return keys.map(k => {
+    const v = val[k]
+    const s = jsonToYaml(v, indent + 1)
+    return (typeof v === 'object' &amp;&amp; v !== null &amp;&amp; (Array.isArray(v) ? v.length : Object.keys(v).length) > 0)
+      ? `${pad}${k}:\n${s}`
+      : `${pad}${k}: ${s}`
+  }).join('\n')
+}
+
+/**
+ * Convert a DOM node (element or text) to a Markdown string.
+ * Handles the most common HTML elements so that raw-HTML containers
+ * can be round-tripped into editable markdown text.
+ *
+ * @param {Node} node
+ * @returns {string}
+ */
+export const htmlToMd = (rootNode) => {
+  // Bidirectional map for reference-style link deduplication: url → label
+  const urlToLabel = new Map()
+  const usedLabels = new Set()
+
+  // Return the existing label for a URL, or derive a unique one from the link text
+  const getLabel = (href, text) => {
+    if (urlToLabel.has(href)) return urlToLabel.get(href)
+    let label = text
+    if (usedLabels.has(label)) {
+      let i = 2
+      while (usedLabels.has(`${text}-${i}`)) i++
+      label = `${text}-${i}`
+    }
+    urlToLabel.set(href, label)
+    usedLabels.add(label)
+    return label
+  }
+
+  // Recursively convert a single DOM node to its Markdown representation
+  const convert = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = node.textContent
+      return t.trim() ? t : ''
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return ''
+
+    // Helpers: serialize all children, or heading children minus anchor links
+    const tag = node.tagName.toLowerCase()
+    if (SKIP_TAGS.has(tag)) return ''
+
+    // .mapclay elements carry their config in data-mapclay (JSON); emit as ```map block
+    if (node.hasAttribute('data-mapclay')) {
+      try {
+        const config = JSON.parse(node.getAttribute('data-mapclay'))
+        return `\`\`\`map\n${jsonToYaml(config)}\n\`\`\`\n\n`
+      } catch {}
+    }
+
+    const inner = (n = node) => Array.from(n.childNodes).map(convert).join('')
+    const headingInner = (n) =>
+      Array.from(n.childNodes)
+        .filter(c => !(c.nodeType === Node.ELEMENT_NODE &amp;&amp; c.classList?.contains('header-anchor')))
+        .map(convert).join('').trim()
+
+    switch (tag) {
+      case 'h1': return `# ${headingInner(node)}\n\n`
+      case 'h2': return `## ${headingInner(node)}\n\n`
+      case 'h3': return `### ${headingInner(node)}\n\n`
+      case 'h4': return `#### ${headingInner(node)}\n\n`
+      case 'h5': return `##### ${headingInner(node)}\n\n`
+      case 'h6': return `###### ${headingInner(node)}\n\n`
+      case 'p': return `${inner().trim()}\n\n`
+      case 'br': return '\n'
+      case 'hr':
+        return node.classList.contains('footnotes-sep') ? '' : '---\n\n'
+      case 'strong':
+      case 'b': return `**${inner()}**`
+      case 'em':
+      case 'i': return `*${inner()}*`
+      case 'sup':
+        if (node.classList.contains('footnote-ref')) {
+          const fnHref = node.querySelector('a')?.getAttribute('href') ?? ''
+          const key = fnHref.replace(/^#fn/, '')
+          return `[^${key}]`
+        }
+        return node.outerHTML
+      case 'section':
+        if (node.classList.contains('footnotes')) {
+          const items = Array.from(node.querySelectorAll('li.footnote-item'))
+            .map(li => {
+              const key = li.id.replace(/^fn/, '')
+              const paras = Array.from(li.children)
+                .map(c => convert(c).trim())
+                .filter(Boolean)
+              const [first, ...rest] = paras
+              return `[^${key}]: ${first}` + rest.map(p => `\n\n    ${p}`).join('')
+            })
+          return items.join('\n\n') + '\n\n'
+        }
+        return inner()
+      case 'a': {
+        if (node.classList.contains('footnote-backref')) return ''
+        const href = node.getAttribute('href') ?? ''
+        if (!href) return `[${inner()}]()`
+        const text = inner()
+        const label = getLabel(href, text)
+        return text === label ? `[${text}]` : `[${text}][${label}]`
+      }
+      case 'img': return `![${node.getAttribute('alt') ?? ''}](${node.getAttribute('src') ?? ''})`
+      case 'code':
+        return node.closest('pre')
+          ? node.textContent
+          : `\`${node.textContent}\``
+      case 'pre': {
+        // After map rendering, &lt;pre class="map-container"> children are .mapclay[data-mapclay]
+        const mapNodes = Array.from(node.querySelectorAll(':scope > .mapclay[data-mapclay]'))
+        if (mapNodes.length) {
+          return mapNodes.map(m => {
+            try {
+              const config = JSON.parse(m.getAttribute('data-mapclay'))
+              return `\`\`\`map\n${jsonToYaml(config)}\n\`\`\`\n\n`
+            } catch { return '' }
+          }).join('')
+        }
+        const code = node.querySelector('code')
+        const lang = (code?.className ?? '').match(/language-(\w+)/)?.[1] ?? ''
+        return `\`\`\`${lang}\n${(code ?? node).textContent.trim()}\n\`\`\`\n\n`
+      }
+      case 'blockquote':
+        return inner().trim().split('\n').map(l => `> ${l}`).join('\n') + '\n\n'
+      case 'li': return inner()
+      case 'ul':
+        return Array.from(node.children)
+          .map(li => `- ${convert(li).trim()}`)
+          .join('\n') + '\n\n'
+      case 'ol':
+        return Array.from(node.children)
+          .map((li, i) => `${i + 1}. ${convert(li).trim()}`)
+          .join('\n') + '\n\n'
+      case 'table': {
+        const rows = Array.from(node.querySelectorAll('tr'))
+        if (!rows.length) return node.outerHTML
+        const toRow = tr =>
+          '| ' + Array.from(tr.querySelectorAll('th, td'))
+            .map(cell => inner(cell).trim().replace(/\|/g, '\\|'))
+            .join(' | ') + ' |'
+        const [head, ...body] = rows
+        const cols = head.querySelectorAll('th, td').length
+        const sep = '| ' + Array(cols).fill('---').join(' | ') + ' |'
+        return [toRow(head), sep, ...body.map(toRow)].join('\n') + '\n\n'
+      }
+      default:
+        return UNWRAP_TAGS.has(tag) ? inner() : node.outerHTML
+    }
+  }
+
+  // Serialize root, then append reference link definitions if any were collected
+  const body = convert(rootNode)
+  if (!urlToLabel.size) return body
+  const defs = [...urlToLabel.entries()].map(([url, label]) => `[${label}]: ${url}`).join('\n')
+  return `${body}\n${defs}\n`
+}
+
+/**
+ * Split a markdown string into block strings on 2+ consecutive blank lines.
+ * Fence blocks (``` ... ```) are treated as atomic — blank lines inside them
+ * do not trigger a split.
+ *
+ * @param {string} md
+ * @returns {string[]}
+ */
+export const splitMd = (md) => {
+  // State: output blocks, current line buffer, fence flag, and consecutive blank-line count
+  const lines = md.split('\n')
+  const blocks = []
+  let buf = []
+  let inFence = false
+  let blanks = 0
+
+  for (const line of lines) {
+    const wasInFence = inFence
+    // Toggle fence state on opening/closing ``` markers
+    if (/^```/.test(line)) inFence = !inFence
+
+    if (!wasInFence &amp;&amp; line.trim() === '') {
+      // Accumulate blank lines; they may trigger a block split
+      blanks++
+      buf.push(line)
+    } else {
+      // Flush buffer as a new block when ≥2 consecutive blanks were seen outside a fence
+      if (!wasInFence &amp;&amp; blanks >= 2) {
+        const content = buf.slice(0, buf.length - blanks).join('\n').trim()
+        if (content) blocks.push(content)
+        buf = []
+      }
+      blanks = 0
+      buf.push(line)
+    }
+  }
+
+  // Flush the final buffer
+  if (buf.length > 0) {
+    const content = buf.join('\n').trim()
+    if (content) blocks.push(content)
+  }
+  return blocks
+}
+
+/**
+ * Convert a markdown (superset of HTML) string into an HTML string
+ * containing one or more .dumby-block elements.
+ * Splits into separate blocks at every gap of 2+ blank lines (\n\n\n).
+ *
+ * @param {string} mdContent - Text in Markdown (superset of HTML) format
+ * @returns {string} HTML string with .dumby-block article elements
+ */
+export const md2dumbyBlocks = (mdContent) => {
+  // Build markdown-it instance with HTML passthrough, anchors, footnotes, and attribute support
+  const md = MarkdownIt({
+    html: true,
+    breaks: true,
+    linkify: true,
+  })
+    .use(MarkdownItAnchor, {
+      permalink: MarkdownItAnchor.permalink.linkInsideHeader({
+        placement: 'before',
+      }),
+    })
+    .use(MarkdownItFootnote)
+    .use(MarkdownItFrontMatter)
+    .use(MarkdownItInjectLinenumbers)
+    .use(MarkdownItAttrs)
+
+  // Register HTML renderer for the synthetic open/close block tokens
+  md.renderer.rules.dumby_block_open = () => '&lt;article class="dumby-block">'
+  md.renderer.rules.dumby_block_close = () => '&lt;/article>'
+
+  // Core rule: inject dumby_block_open / dumby_block_close tokens around groups of
+  // block-level tokens separated by ≥2 blank source lines
+  md.core.ruler.after('block', 'dumby_block', state => {
+    const tokens = state.tokens
+    const out = []
+    let blockOpen = false
+    let prevEndLine = -1
+
+    for (const token of tokens) {
+      if (token.map) {
+        const gap = token.map[0] - prevEndLine
+        if (!blockOpen) {
+          // Open the first dumby-block
+          out.push(new state.Token('dumby_block_open', '', 1))
+          blockOpen = true
+        } else if (gap >= 2) {
+          // Gap of ≥2 blank lines: close current block and open a new one
+          out.push(new state.Token('dumby_block_close', '', -1))
+          out.push(new state.Token('dumby_block_open', '', 1))
+        }
+        prevEndLine = token.map[1]
+      }
+      out.push(token)
+    }
+
+    // Close the last open block
+    if (blockOpen) out.push(new state.Token('dumby_block_close', '', -1))
+    state.tokens = out
+  })
+
+  return md.render(mdContent)
+}
+</code></pre>
+        </article>
+    </section>
+
+
+
+
+</div>
+
+<nav>
+    <h2><a href="index.html">Home</a></h2><h3>Modules</h3><ul><li><a href="module-marker.html">marker</a></li></ul><h3>Classes</h3><ul><li><a href="Layout.html">Layout</a></li><li><a href="Overlay.html">Overlay</a></li><li><a href="SideBySide.html">SideBySide</a></li><li><a href="Sticky.html">Sticky</a></li></ul><h3>Global</h3><ul><li><a href="global.html#Folder">Folder</a></li><li><a href="global.html#Item">Item</a></li><li><a href="global.html#Suggestion">Suggestion</a></li><li><a href="global.html#addDraggable">addDraggable</a></li><li><a href="global.html#addGeoLink">addGeoLink</a></li><li><a href="global.html#addGeoLinkByDrag">addGeoLinkByDrag</a></li><li><a href="global.html#addGeoSchemeByText">addGeoSchemeByText</a></li><li><a href="global.html#addLinkbyGeocoding">addLinkbyGeocoding</a></li><li><a href="global.html#addMarker">addMarker</a></li><li><a href="global.html#addMarkerByPoint">addMarkerByPoint</a></li><li><a href="global.html#addRefLink">addRefLink</a></li><li><a href="global.html#animateRectTransition">animateRectTransition</a></li><li><a href="global.html#assignMapId">assignMapId</a></li><li><a href="global.html#buildDumbymap">buildDumbymap</a></li><li><a href="global.html#coordPattern">coordPattern</a></li><li><a href="global.html#createModal">createModal</a></li><li><a href="global.html#createShowcase">createShowcase</a></li><li><a href="global.html#debounce">debounce</a></li><li><a href="global.html#defaultLayouts">defaultLayouts</a></li><li><a href="global.html#defaultRender">defaultRender</a></li><li><a href="global.html#editMap">editMap</a></li><li><a href="global.html#editMapByRawText">editMapByRawText</a></li><li><a href="global.html#exportFolder">exportFolder</a></li><li><a href="global.html#exportHtml">exportHtml</a></li><li><a href="global.html#exportMarkdown">exportMarkdown</a></li><li><a href="global.html#fetchDefaultAliases">fetchDefaultAliases</a></li><li><a href="global.html#focusDelay">focusDelay</a></li><li><a href="global.html#focusNextBlock">focusNextBlock</a></li><li><a href="global.html#focusNextMap">focusNextMap</a></li><li><a href="global.html#full2Half">full2Half</a></li><li><a href="global.html#generateMaps">generateMaps</a></li><li><a href="global.html#geocodingResult">geocodingResult</a></li><li><a href="global.html#getCommonAncestor">getCommonAncestor</a></li><li><a href="global.html#getCoordinatesByPixels">getCoordinatesByPixels</a></li><li><a href="global.html#getMarkersByGeoLink">getMarkersByGeoLink</a></li><li><a href="global.html#getMarkersFromMaps">getMarkersFromMaps</a></li><li><a href="global.html#htmlToMd">htmlToMd</a></li><li><a href="global.html#insideParent">insideParent</a></li><li><a href="global.html#insideWindow">insideWindow</a></li><li><a href="global.html#isAnchorVisible">isAnchorVisible</a></li><li><a href="global.html#mapBlockSelector">mapBlockSelector</a></li><li><a href="global.html#mapCache">mapCache</a></li><li><a href="global.html#md2dumbyBlocks">md2dumbyBlocks</a></li><li><a href="global.html#onRemove">onRemove</a></li><li><a href="global.html#pickBlockItem">pickBlockItem</a></li><li><a href="global.html#pickLayoutItem">pickLayoutItem</a></li><li><a href="global.html#pickMapItem">pickMapItem</a></li><li><a href="global.html#printObject">printObject</a></li><li><a href="global.html#removeBlockFocus">removeBlockFocus</a></li><li><a href="global.html#removeLeaderLines">removeLeaderLines</a></li><li><a href="global.html#renderResults">renderResults</a></li><li><a href="global.html#replaceTextNodes">replaceTextNodes</a></li><li><a href="global.html#restoreCamera">restoreCamera</a></li><li><a href="global.html#scrollToBlock">scrollToBlock</a></li><li><a href="global.html#setGeoLinkType">setGeoLinkType</a></li><li><a href="global.html#setGeoLinkTypeItem">setGeoLinkTypeItem</a></li><li><a href="global.html#setLeaderLineType">setLeaderLineType</a></li><li><a href="global.html#setupBlockEdit">setupBlockEdit</a></li><li><a href="global.html#setupChildObserver">setupChildObserver</a></li><li><a href="global.html#setupContainer">setupContainer</a></li><li><a href="global.html#setupContentObserver">setupContentObserver</a></li><li><a href="global.html#setupContextMenu">setupContextMenu</a></li><li><a href="global.html#setupFileDrop">setupFileDrop</a></li><li><a href="global.html#setupKeybindings">setupKeybindings</a></li><li><a href="global.html#setupLayoutObserver">setupLayoutObserver</a></li><li><a href="global.html#setupMouseDrag">setupMouseDrag</a></li><li><a href="global.html#shiftByWindow">shiftByWindow</a></li><li><a href="global.html#simplePlaceholder">simplePlaceholder</a></li><li><a href="global.html#splitMd">splitMd</a></li><li><a href="global.html#switchToNextLayout">switchToNextLayout</a></li><li><a href="global.html#throttle">throttle</a></li><li><a href="global.html#toggleBlockFocus">toggleBlockFocus</a></li><li><a href="global.html#toggleMapFocus">toggleMapFocus</a></li><li><a href="global.html#updateAttributeByStep">updateAttributeByStep</a></li><li><a href="global.html#updateGeoSchemeByCRS">updateGeoSchemeByCRS</a></li><li><a href="global.html#updateMapCameraByMarker">updateMapCameraByMarker</a></li></ul>
+</nav>
+
+<br class="clear">
+
+<footer>
+    Documentation generated by <a href="https://github.com/jsdoc/jsdoc">JSDoc 4.0.5</a> on Thu Nov 19 2026 15:25:38 GMT-0400 (Atlantic Standard Time)
+</footer>
+
+<script> prettyPrint(); </script>
+<script src="scripts/linenumber.js"> </script>
+</body>
+</html>

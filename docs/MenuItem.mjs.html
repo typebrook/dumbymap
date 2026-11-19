@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>JSDoc: Source: MenuItem.mjs</title>
+
+    <script src="scripts/prettify/prettify.js"> </script>
+    <script src="scripts/prettify/lang-css.js"> </script>
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <link type="text/css" rel="stylesheet" href="styles/prettify-tomorrow.css">
+    <link type="text/css" rel="stylesheet" href="styles/jsdoc-default.css">
+</head>
+
+<body>
+
+<div id="main">
+
+    <h1 class="page-title">Source: MenuItem.mjs</h1>
+
+    
+
+
+
+    
+    <section>
+        <article>
+            <pre class="prettyprint source linenums"><code>import { onRemove, shiftByWindow } from './utils.mjs'
+import { htmlToMd, splitMd } from './markdown.mjs'
+import { addMarkerByPoint } from './dumbyUtils.mjs'
+/* eslint-disable-next-line no-unused-vars */
+import { GeoLink, getMarkersFromMaps, getMarkersByGeoLink, removeLeaderLines } from './Link.mjs'
+import * as markers from './marker.mjs'
+import { parseConfigsFromYaml } from 'mapclay'
+
+/**
+ * @typedef {Object} RefLink
+ * @property {string} ref - name of link
+ * @property {string} link - content of link
+ * @property {string|null} title - title of link
+ */
+
+/**
+   * Creates a Item instance
+   *
+   * @param {Object} options - The options for the item
+   * @param {string} [options.text] - The text content of the item
+   * @param {string} [options.innerHTML] - The HTML content of the item
+   * @param {string} [options.title] - The title attribute for the item
+   * @param {Function} [options.onclick] - The click event handler
+   * @param {string} [options.style] - The CSS style string
+   * @param {string[]} [options.className] - Additional CSS classes
+   */
+export const Item = ({
+  id,
+  text,
+  innerHTML,
+  title,
+  onclick,
+  style,
+  className,
+}) => {
+  const menuItem = document.createElement('div')
+  if (id) menuItem.id = id
+  if (title) menuItem.title = title
+  menuItem.innerHTML = innerHTML ?? text
+  menuItem.onclick = onclick
+  menuItem.style.cssText = style
+  menuItem.classList.add('menu-item')
+  className?.forEach(c => menuItem.classList.add(c))
+
+  menuItem.onmouseover = () => {
+    menuItem.parentElement
+      .querySelectorAll('.sub-menu')
+      .forEach(sub => sub.remove())
+  }
+  return menuItem
+}
+
+/**
+ * Creates a new menu item that generates a submenu on hover
+ *
+ * @param {Object} options - The options for the folder
+ * @param {string} [options.text] - The text content of the folder
+ * @param {string} [options.innerHTML] - The HTML content of the folder
+ * @param {Item[]} options.items - The submenu items
+ */
+export const Folder = ({ id, text, innerHTML, items, style }) => {
+  const folder = document.createElement('div')
+  if (id) folder.id = id
+  folder.innerHTML = innerHTML ?? text
+  folder.classList.add('folder', 'menu-item')
+  folder.items = items
+  folder.onmouseover = () => {
+    if (folder.querySelector('.sub-menu')) return
+    // Prepare submenu
+    const submenu = document.createElement('div')
+    submenu.className = 'sub-menu'
+    const offset = folder.items.length > 1 ? '-20px' : '0px'
+    submenu.style.cssText = `${style ?? ''}position: absolute; left: 105%; top: ${offset};`
+    folder.items.forEach(item => submenu.appendChild(item))
+    submenu.onmouseleave = () => {
+      if (submenu.querySelectorAll('.sub-menu').length > 0) return
+      submenu.remove()
+    }
+
+    // hover effect
+    folder.parentElement
+      .querySelectorAll('.sub-menu')
+      .forEach(sub => sub.remove())
+    folder.appendChild(submenu)
+    shiftByWindow(submenu)
+  }
+  return folder
+}
+
+/**
+ * simplePlaceholder.
+ *
+ * @param {String} text
+ */
+export const simplePlaceholder = (text) => Item({
+  text,
+  style: 'width: fit-content; margin: 0 auto; color: gray; pointer-events: none; font-size: 0.8rem; line-height: 1; font-weight: bolder;',
+})
+
+/**
+ * Pick up a map
+ *
+ * @param {Object} options - The options object
+ * @param {Object} options.utils - Utility functions
+ * @returns {Folder} A Folder instance for picking a map
+ */
+export const pickMapItem = ({ utils }) =>
+  Folder({
+    innerHTML: '&lt;span>Maps&lt;span>&lt;span class="info">(Tab)&lt;/span>',
+    items: utils.renderedMaps().map(
+      map =>
+        Item({
+          text: map.id,
+          onclick: () => {
+            map.classList.add('focus')
+            map.scrollIntoView({ behavior: 'smooth' })
+          },
+        }),
+    ),
+  })
+
+/**
+ * pickBlockItem.
+ *
+ * @param {HTMLElement[]} options.blocks
+ * @param {Function[]} options.utils
+ */
+export const pickBlockItem = ({ blocks, utils }) =>
+  Folder({
+    innerHTML: '&lt;span>Blocks&lt;span>&lt;span class="info">(n/p)&lt;/span>',
+    items: blocks.map(
+      (block, index) => {
+        const focus = block.classList.contains('focus')
+        const preview = block.querySelector('p')
+          ?.textContent.substring(0, 15)
+          ?.concat(' ', '...  ') ?? ''
+
+        return Item({
+          className: ['keep-menu', focus ? 'checked' : 'unchecked'],
+          innerHTML:
+            `&lt;strong>(${index})&lt;/strong>&lt;span style='display: inline-block; margin-inline: 1.2em;'>${preview}&lt;/span>`,
+          onclick: (e) => {
+            block.classList.toggle('focus')
+
+            const focus = block.classList.contains('focus')
+            if (focus) utils.scrollToBlock(block)
+            const item = e.target.closest('.menu-item.keep-menu')
+            item.classList.add(focus ? 'checked' : 'unchecked')
+            item.classList.remove(focus ? 'unchecked' : 'checked')
+
+            // UX: remove menu after user select/deselect blocks
+            const submenu = e.target.closest('.sub-menu')
+            submenu.onmouseleave = () => { submenu.closest('.menu').style.display = 'none' }
+          },
+        })
+      },
+    ),
+  })
+
+/**
+ * pickLayoutItem.
+ *
+ * @param {HTEMElement} options.container
+ * @param {String[]} options.layouts
+ */
+export const pickLayoutItem = ({ container, layouts }) =>
+  Folder({
+    innerHTML: '&lt;span>Layouts&lt;span>&lt;span class="info">(x)&lt;/span>',
+    items: [
+      ...layouts.map(
+        layout =>
+          Item({
+            text: layout.name,
+            onclick: () => container.setAttribute('data-layout', layout.name),
+          }),
+      ),
+      Item({
+        innerHTML: '&lt;a href="https://github.com/outdoorsafetylab/dumbymap#layouts" class="external" style="display: block; padding: 0.5rem;">More...&lt;/a>',
+        style: 'padding: 0;',
+      }),
+    ],
+  })
+
+/**
+ * addGeoLink.
+ *
+ * @param {Function[]} options.utils
+ * @param {Range} range
+ */
+export const addGeoLink = ({ utils }, range) =>
+  Item({
+    text: 'Add GeoLink',
+    onclick: () => {
+      const content = range.toString()
+      // FIXME Apply geolink only on matching sub-range
+      const match = content.match(/(^\D*[\d.]+)\D+([\d.]+)\D*$/)
+      if (!match) return false
+
+      const [x, y] = match.slice(1)
+      const anchor = document.createElement('a')
+      anchor.textContent = content
+      // FIXME apply WGS84
+      anchor.href = `geo:${y},${x}?xy=${x},${y}`
+
+      // FIXME
+      if (utils.createGeoLink(anchor)) {
+        range.deleteContents()
+        range.insertNode(anchor)
+      }
+    },
+  })
+
+/**
+   * Suggestion. Menu Item for editor suggestion.
+   *
+   * @param {String} options.text
+   * @param {String} options.replace - new text content
+   * @param {CodeMirror} options.cm
+   */
+export const Suggestion = ({ text, replace, cm }) => {
+  const suggestion = Item({ text })
+  suggestion.replace = replace
+  suggestion.classList.add('suggestion')
+
+  suggestion.onmouseover = () => {
+    Array.from(suggestion.parentElement?.children)?.forEach(s =>
+      s.classList.remove('focus'),
+    )
+    suggestion.classList.add('focus')
+  }
+  suggestion.onmouseout = () => {
+    suggestion.classList.remove('focus')
+  }
+  suggestion.onclick = () => {
+    const anchor = cm.getCursor()
+    cm.setSelection(anchor, { ...anchor, ch: 0 })
+    cm.replaceSelection(suggestion.replace)
+    cm.focus()
+    const newAnchor = { ...anchor, ch: suggestion.replace.length }
+    cm.setCursor(newAnchor)
+  }
+  return suggestion
+}
+
+/**
+ * renderResults. return a menu item for reporting render results
+ *
+ * @param {Object} options.modal - Ojbect of plain-modal
+ * @param {HTMLElement} options.modalContent
+ * @param {HTMLElement} map - Rendered map element
+ */
+export const renderResults = ({ modal, modalContent }, map) =>
+  Item({
+    text: 'Render Results',
+    onclick: () => {
+      modal.open()
+      modal.overlayBlur = 3
+      modal.closeByEscKey = false
+      // HACK find another way to override inline style
+      document.querySelector('.plainmodal-overlay-force').style.position =
+        'relative'
+
+      modalContent.innerHTML = ''
+      const sourceCode = document.createElement('div')
+      sourceCode.innerHTML = `&lt;a href="${map.renderer.url ?? map.renderer.use}">Source Code&lt;/a>`
+      modalContent.appendChild(sourceCode)
+      const printDetails = result => {
+        // const funcBody = result.func.toString()
+        // const loc = funcBody.split('\n').length
+        const color =
+          {
+            success: 'green',
+            fail: 'red',
+            skip: 'black',
+            stop: 'chocolate',
+          }[result.state] ?? 'black'
+        printObject(
+          result,
+          modalContent,
+          `${result.func.name} &lt;span style='float: right;'>&lt;span style='display: inline-block; width: 100px; color: ${color};'>${result.state}&lt;/span>&lt;/span>`,
+        )
+      }
+
+      // Add contents about prepare steps
+      const prepareHeading = document.createElement('h3')
+      prepareHeading.textContent = 'Prepare Steps'
+      modalContent.appendChild(prepareHeading)
+      const prepareSteps = map.renderer.results.filter(
+        r => r.type === 'prepare',
+      )
+      prepareSteps.forEach(printDetails)
+
+      // Add contents about render steps
+      const renderHeading = document.createElement('h3')
+      renderHeading.textContent = 'Render Steps'
+      modalContent.appendChild(renderHeading)
+      const renderSteps = map.renderer.results.filter(r => r.type === 'render')
+      renderSteps.forEach(printDetails)
+    },
+  })
+
+/**
+ * printObject. Generate &lt;details> in parent element based on Ojbect properties
+ *
+ * @param {Object} obj
+ * @param {HTMLElement} parentElement
+ * @param {String} name
+ */
+function printObject (obj, parentElement, name = null) {
+  // Create &lt;details> and &lt;summary> inside
+  const detailsEle = document.createElement('details')
+  const details = name ?? (obj instanceof Error ? obj.name : Object.values(obj)[0])
+  detailsEle.innerHTML = `&lt;summary>${details}&lt;/summary>`
+  parentElement.appendChild(detailsEle)
+
+  detailsEle.onclick = () => {
+    // Don't add items if it has contents
+    if (detailsEle.querySelector(':scope > :not(summary)')) return
+
+    if (obj instanceof Error) {
+      // Handle Error objects specially
+      const errorProps = ['name', 'message', 'stack', ...Object.keys(obj)]
+      errorProps.forEach(key => {
+        const value = obj[key]
+        const valueString = key === 'stack' ? `&lt;pre>${value}&lt;/pre>` : value
+        const propertyElement = document.createElement('p')
+        propertyElement.innerHTML = `&lt;strong>${key}&lt;/strong>: ${valueString}`
+        detailsEle.appendChild(propertyElement)
+      })
+    } else {
+      // Handle regular objects
+      Object.entries(obj).forEach(([key, value]) => {
+        if (typeof value === 'object' &amp;&amp; value !== null) {
+          printObject(value, detailsEle, key)
+        } else {
+          const valueString =
+            typeof value === 'function'
+              ? `&lt;pre>${value}&lt;/pre>`
+              : value ?? typeof value
+          const propertyElement = document.createElement('p')
+          propertyElement.innerHTML = `&lt;strong>${key}&lt;/strong>: ${valueString}`
+          detailsEle.appendChild(propertyElement)
+        }
+      })
+    }
+  }
+}
+
+/**
+ * toggleBlockFocus. Menu Item for toggling focus on a block
+ *
+ * @param {HTMLElement} block
+ */
+export const toggleBlockFocus = block =>
+  Item({
+    text: 'Toggle Focus',
+    onclick: () => block.classList.toggle('focus'),
+  })
+
+/**
+ * toggleMapFocus. Menu Item for toggling focus on a map
+ *
+ * @param {HTMLElement} map
+ */
+export const toggleMapFocus = map =>
+  Item({
+    text: 'Toggle Focus',
+    onclick: () => {
+      if (map.classList.toggle('focus')) {
+        map.classList.add('focus-manual')
+      }
+    },
+  })
+
+/**
+ * getCoordinatesByPixels.
+ *
+ * @param {HTMLElement} map instance
+ * @param {Number[]} xy - pixel of window
+ */
+export const getCoordinatesByPixels = (map, xy) =>
+  Item({
+    text: 'Get Coordinates',
+    onclick: () => {
+      const [x, y] = map.renderer.unproject(xy)
+      const xyString = `[${x.toFixed(7)}, ${y.toFixed(7)}]`
+      navigator.clipboard.writeText(xyString)
+      window.alert(`${xyString} copied to clipboard`)
+    },
+  })
+
+/**
+ * restoreCamera.
+ *
+ * @param {HTMLElement} map
+ */
+export const restoreCamera = map =>
+  Item({
+    text: 'Restore Camera',
+    onclick: () => map.renderer.restoreCamera(),
+  })
+
+export const loadFileItem = (map) => Item({
+  text: 'Load File...',
+  onclick: () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.gpx,.geojson,.json'
+    input.onchange = () => {
+      const file = input.files[0]
+      if (!file) return
+      const ext = file.name.split('.').pop().toLowerCase()
+      const url = URL.createObjectURL(file) + '#file.' + ext
+      const container = map.closest('.map-container')
+      const configText = Array.from(container.querySelectorAll('.mapclay'))
+        .map(m => m.dataset.mapclay ?? '')
+        .join('\n---\n')
+      const configList = parseConfigsFromYaml(configText)
+      configList.find(c => c.id === map.id).file = url
+      const code = document.createElement('code')
+      code.className = 'map'
+      code.textContent = configList.map(JSON.stringify).join('\n---\n')
+      container.dataset.render = 'no-delay'
+      container.replaceChildren(code)
+    }
+    input.click()
+  },
+})
+
+/**
+ * addRefLink. replace selected text into markdown link by reference style links
+ *
+ * @param {CodeMirror} cm
+ * @param {RefLink[]} refLinks
+ */
+export const addRefLink = (cm, refLinks) =>
+  Folder({
+    text: 'Add Link',
+    items: refLinks.map(refLink => {
+      let text = refLink.ref
+      if (refLink.link.startsWith('geo:')) text = `@ ${text}`
+      if (refLink.title?.match(/^=>/)) text = `=> ${text}`
+
+      return Item({
+        text,
+        title: refLink.link,
+        onclick: () => {
+          const selection = cm.getSelection()
+          if (selection === refLink.ref) {
+            cm.replaceSelection(`[${selection}]`)
+          } else {
+            cm.replaceSelection(`[${selection}][${refLink.ref}]`)
+          }
+        },
+      })
+    }),
+  })
+
+/**
+ * setGeoLinkTypeItem.
+ *
+ * @param {GeoLink} link
+ * @param {String} text
+ * @param {String} type
+ */
+export const setGeoLinkTypeItem = ({ link, type, ...others }) => {
+  const params = new URLSearchParams(link.search)
+  return Item({
+    ...others,
+    className: ['keep-menu'],
+    onclick: () => {
+      params.set('type', type)
+      link.search = params
+      removeLeaderLines(link)
+      getMarkersByGeoLink(link)
+        .forEach(marker => marker.remove())
+      getMarkersByGeoLink(link)
+    },
+  })
+}
+
+/**
+ * setGeoLinkType.
+ *
+ * @param {HTMLAnchorElement} link
+ */
+export const setGeoLinkType = (link) => Folder({
+  text: 'Marker Type',
+  style: 'min-width: unset; display: grid; grid-template-columns: repeat(5, 1fr);',
+  items: Object.entries(markers)
+    .sort(([, a], [, b]) => (a.order ?? 9999) > (b.order ?? 9999))
+    .map(([key, value]) => {
+      return setGeoLinkTypeItem({
+        link,
+        title: value.name ?? key.at(0).toUpperCase() + key.slice(1),
+        innerHTML: value.html,
+        type: key,
+        style: 'min-width: unset; width: fit-content; padding: 10px; margin: auto auto;',
+      })
+    }),
+})
+
+/**
+ * set type of leader-line
+ *
+ * @param {GeoLink | DocLink} link
+ */
+export const setLeaderLineType = (link) => Folder({
+  text: 'Line Type',
+  items: ['magnet', 'straight', 'grid', 'fluid']
+    .map(path => Item({
+      text: path,
+      className: ['keep-menu'],
+      onclick: () => {
+        link.dataset.linePath = path
+        removeLeaderLines(link)
+        link.onmouseover()
+      },
+    })),
+})
+
+/**
+ * addMarker.
+ *
+ * @param {Object} options
+ * @param {HTMLElement} options.map - map element
+ * @param {Number[]} options.point - xy values in pixel
+ * @param {Function} options.isNameValid - check marker name is valid
+ * @param {Function} options.callback
+ */
+export const addMarker = ({
+  map,
+  point,
+  isNameValid = () => true,
+  callback = null,
+}) => Item({
+  text: 'Add Marker',
+  onclick: () => {
+    let markerName
+    do {
+      markerName = window.prompt(markerName ? 'Name exists' : 'Marker Name')
+    } while (markerName &amp;&amp; !isNameValid(markerName))
+    if (markerName === null) return
+
+    const marker = addMarkerByPoint({ point, map, title: markerName })
+    callback?.(marker)
+  },
+})
+
+/**
+ * editByRawText.
+ *
+ * @param {HTMLElement} map
+ */
+export const editMapByRawText = (map) => Item({
+  text: 'Edit by Raw Text',
+  onclick: () => {
+    const container = map.closest('.map-container')
+    const maps = Array.from(container.querySelectorAll('.mapclay'))
+    if (!maps) return false
+
+    const rect = map.getBoundingClientRect()
+    const textArea = document.createElement('textarea')
+    textArea.className = 'edit-map'
+    textArea.style.cssText = `width: ${rect.width}px; height: ${rect.height}px;`
+    textArea.value = maps.map(map => map.dataset.mapclay ?? '')
+      .join('\n---\n')
+      .replaceAll(',', '\n')
+      .replaceAll(/["{}]/g, '')
+      .replaceAll(/:(\w)/g, ': $1')
+
+    textArea.addEventListener('focusout', () => {
+      const code = document.createElement('code')
+      code.className = 'map'
+      code.textContent = textArea.value
+      container.dataset.render = 'no-delay'
+      textArea.replaceWith(code)
+    })
+    container.replaceChildren(textArea)
+
+    return true
+  },
+})
+
+/**
+ * editMap.
+ *
+ * @param {HTEMLElement} map
+ * @param {Object} dumbymap
+ */
+export const editMap = (map, dumbymap) => {
+  const options = Object.entries(dumbymap.aliases)
+    .map(([option, aliases]) =>
+      Folder({
+        text: option,
+        items: Object.entries(aliases)
+          .map(([alias, value]) => {
+            const aliasValue = value.value ?? value
+            return Item({
+              innerHTML: `&lt;div>${alias}&lt;/div>&lt;div style="padding-left: 20px; color: gray; font-size: 1rem";">${aliasValue}&lt;/div>`,
+              style: 'display: flex; justify-content: space-between; max-width: 20rem;',
+              onclick: () => {
+                const container = map.closest('.map-container')
+                const configText = Array.from(container.querySelectorAll('.mapclay'))
+                  .map(map => map.dataset.mapclay ?? '')
+                  .join('\n---\n')
+                const configList = parseConfigsFromYaml(configText)
+                configList.find(config => config.id === map.id)[option] = aliasValue
+                const code = document.createElement('code')
+                code.className = 'map'
+                code.textContent = configList.map(JSON.stringify).join('\n---\n')
+                container.dataset.render = 'no-delay'
+                container.replaceChildren(code)
+              },
+            })
+          }),
+      }),
+    )
+  return Folder({
+    text: 'Edit Map',
+    style: 'overflow: visible;',
+    items: [
+      editMapByRawText(map),
+      ...options,
+    ],
+  })
+}
+
+/**
+ * addLinkbyGeocoding.
+ *
+ * @param {Range} range
+ */
+export const addLinkbyGeocoding = (range) => {
+  return Item({
+    text: 'Add Link by Geocoding',
+    className: ['keep-menu'],
+    onclick: async (e) => {
+      /** Add spinning circle for Network */
+      e.target.classList.add('with-spinning-circle')
+      const menu = e.target.closest('.dumby-menu')
+      if (!menu) return
+
+      /** Geocoding by Nominatim */
+      // TODO Add more params like limit:
+      // https://nominatim.org/release-docs/latest/api/Search/
+      const query = range.toString()
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?q=${query.toString()}&amp;format=json`)
+      const places = await response.json()
+      menu.replaceChildren()
+
+      // Show Message if no result found
+      if (places.length === 0) {
+        menu.appendChild(Item({ text: 'No Result Found' }))
+        return
+      }
+
+      // Add items for each results
+      const bbox = places.map(p => p.boundingbox).reduce((acc, cur) => [
+        Math.min(acc[0], cur[0]),
+        Math.max(acc[1], cur[1]),
+        Math.min(acc[2], cur[2]),
+        Math.max(acc[3], cur[3]),
+      ])
+      const bounds = [[bbox[2], bbox[0]], [bbox[3], bbox[1]]]
+      const items = places.map(geocodingResult(bounds, (a) => {
+        a.className = 'not-geolink from-geocoding'
+        a.textContent = query
+        range.deleteContents()
+        range.insertNode(a)
+      }))
+      menu.replaceChildren(...items)
+      shiftByWindow(menu)
+    },
+  })
+}
+
+/**
+ * setupBlockEdit. Set up block edit overlay and return a menu item factory.
+ *
+ * @param {Object} dumbymap
+ * @param {Object} options
+ * @param {HTMLElement} options.container
+ * @param {HTMLElement} options.htmlHolder
+ * @param {Function} options.md2dumbyBlocks
+ * @param {Function} options.splitMd
+ */
+export const setupBlockEdit = (dumbymap, { container, htmlHolder, md2dumbyBlocks }) => {
+  // Keep data-block-index in sync so menu items can address blocks by stable index
+  const assignBlockIndices = () => {
+    container.querySelectorAll('.dumby-block').forEach((block, i) => {
+      block.dataset.blockIndex = i
+    })
+  }
+  assignBlockIndices()
+
+  // Re-index whenever the htmlHolder's direct children change (block added/removed)
+  new window.MutationObserver(assignBlockIndices)
+    .observe(htmlHolder, { childList: true })
+
+  /** Build edit modal overlay and inject it into the document */
+  const overlay = document.createElement('div')
+  overlay.className = 'dumby-edit-overlay'
+  overlay.innerHTML = `
+    &lt;div class="dumby-edit-modal">
+      &lt;header class="dumby-edit-header">
+        &lt;span>Edit Block&lt;/span>
+        &lt;span class="dumby-edit-hint">Ctrl+Enter to save &amp;nbsp;·&amp;nbsp; Esc to cancel&lt;/span>
+      &lt;/header>
+      &lt;textarea class="dumby-edit-textarea" spellcheck="false">&lt;/textarea>
+      &lt;div class="dumby-edit-actions">
+        &lt;button class="dumby-edit-cancel">Cancel&lt;/button>
+        &lt;button class="dumby-edit-save">Save&lt;/button>
+      &lt;/div>
+    &lt;/div>
+  `
+  document.body.appendChild(overlay)
+
+  // Modal state: textarea element and the index of the block being edited
+  const textarea = overlay.querySelector('.dumby-edit-textarea')
+  let editingIndex = null
+
+  const closeEditModal = () => {
+    overlay.classList.remove('open')
+    editingIndex = null
+  }
+
+  const saveEditModal = () => {
+    if (editingIndex === null) return
+    const block = dumbymap.blocks[editingIndex]
+    // TODO: per-block rendering restarts markdown-it context — heading anchor IDs
+    // and footnote numbers in the edited block are independent of other blocks.
+    const tmp = document.createElement('div')
+    tmp.innerHTML = md2dumbyBlocks(textarea.value)
+    block.replaceWith(...tmp.querySelectorAll('.dumby-block'))
+    closeEditModal()
+  }
+
+  const titleSpan = overlay.querySelector('.dumby-edit-header span')
+
+  const openEditModal = (index) => {
+    editingIndex = index
+    titleSpan.textContent = 'Edit Block'
+    // Serialize the block back to Markdown for editing
+    textarea.value = htmlToMd(dumbymap.blocks[index]).trim()
+    overlay.classList.add('open')
+    textarea.focus()
+    // Place cursor at the end of the text
+    textarea.selectionStart = textarea.selectionEnd = textarea.value.length
+  }
+
+  const openEditAllModal = () => {
+    editingIndex = null
+    titleSpan.textContent = 'Edit ALL'
+    // Concatenate all blocks' Markdown separated by 3 newlines (2 blank lines = block split)
+    textarea.value = dumbymap.blocks.map(b => htmlToMd(b).trim()).join('\n\n\n')
+    overlay.classList.add('open')
+    textarea.focus()
+    textarea.selectionStart = textarea.selectionEnd = 0
+  }
+
+  const saveEditAllModal = () => {
+    const mdBlocks = splitMd(textarea.value)
+    const tmp = document.createElement('div')
+    tmp.innerHTML = mdBlocks.map(md2dumbyBlocks).join('')
+    const newBlocks = [...tmp.querySelectorAll('.dumby-block')]
+    // Replace all existing blocks with the new set
+    const existing = [...dumbymap.blocks]
+    existing[0].replaceWith(...newBlocks)
+    existing.slice(1).forEach(b => b.remove())
+    closeEditModal()
+  }
+
+  const saveModal = () => {
+    if (editingIndex !== null) saveEditModal()
+    else saveEditAllModal()
+  }
+
+  // Wire keyboard shortcuts and button click handlers for the modal
+  const onEditKeydown = e => {
+    if (e.key === 'Escape') closeEditModal()
+  }
+  document.addEventListener('keydown', onEditKeydown)
+  textarea.addEventListener('keydown', e => {
+    if (e.key === 'Enter' &amp;&amp; (e.ctrlKey || e.metaKey)) saveModal()
+  })
+  overlay.querySelector('.dumby-edit-cancel').onclick = closeEditModal
+  overlay.querySelector('.dumby-edit-save').onclick = saveModal
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeEditModal() })
+
+  // Clean up overlay and global listener when the container is removed from the DOM
+  onRemove(container, () => {
+    overlay.remove()
+    document.removeEventListener('keydown', onEditKeydown)
+  })
+
+  const editBlockItem = (block) => Item({
+    text: '✏ Edit Block',
+    onclick: () => openEditModal(+block.dataset.blockIndex),
+  })
+
+  const editAllItem = () => Item({
+    text: '✏ Edit ALL',
+    onclick: openEditAllModal,
+  })
+
+  return { editBlockItem, editAllItem }
+}
+
+/**
+ * exportMarkdown. Save current session markdown to the filesystem.
+ *
+ * @param {Object} dumbymap
+ */
+export const exportMarkdown = (dumbymap) => Item({
+  text: 'Export Markdown',
+  onclick: async () => {
+    const content = dumbymap.blocks.map(b => htmlToMd(b).trim()).join('\n\n\n')
+    const blob = new Blob([content], { type: 'text/markdown' })
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: 'document.md',
+          types: [{ description: 'Markdown', accept: { 'text/markdown': ['.md'] } }],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+      } catch (e) {
+        if (e.name !== 'AbortError') throw e
+      }
+    } else {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'document.md'
+      a.click()
+      URL.revokeObjectURL(a.href)
+    }
+  },
+})
+
+/**
+ * exportHtml. Export a self-contained HTML file with inlined CSS and ESM.
+ *
+ * @param {Object} dumbymap
+ */
+export const exportHtml = () => Item({
+  text: 'Export HTML',
+  onclick: async () => {
+    // Renderer and bundle live in dist/, computable from this module's URL
+    // Works whether this is src/MenuItem.mjs or the dist/dumbymap.mjs bundle
+    const distBase = new URL('../dist/', import.meta.url)
+
+    // Fetch the original page source so we start from clean markup
+    const sourceHtml = await fetch(location.href).then(r => r.text())
+    const doc = new DOMParser().parseFromString(sourceHtml, 'text/html')
+
+    // Inline all &lt;link rel="stylesheet"> as &lt;style>
+    for (const link of [...doc.querySelectorAll('link[rel="stylesheet"]')]) {
+      const url = new URL(link.getAttribute('href'), location.href)
+      try {
+        const css = await fetch(url).then(r => r.text())
+        const style = doc.createElement('style')
+        style.textContent = css
+        link.replaceWith(style)
+      } catch (e) {
+        console.warn('Export HTML: failed to inline CSS:', url.href, e)
+      }
+    }
+
+    // Remove importmap — not needed once bundle is inlined
+    doc.querySelectorAll('script[type="importmap"]').forEach(s => s.remove())
+
+    // Fetch the self-contained dumbymap bundle
+    let bundleText = await fetch(new URL('dumbymap.mjs', distBase)).then(r => r.text())
+
+    // Inline each renderer as a data: URI, then patch the bundle's renderer paths
+    const encodeModule = (text) => {
+      const bytes = new TextEncoder().encode(text)
+      const binary = Array.from(bytes, b => String.fromCharCode(b)).join('')
+      return 'data:application/javascript;base64,' + btoa(binary)
+    }
+
+    await Promise.all(
+      ['leaflet', 'maplibre', 'openlayers'].map(async (name) => {
+        try {
+          const text = await fetch(new URL(`renderers/${name}.mjs`, distBase)).then(r => r.text())
+          bundleText = bundleText.replaceAll(`./renderers/${name}.mjs`, encodeModule(text))
+        } catch (e) {
+          console.warn(`Export HTML: failed to inline renderer ${name}:`, e)
+        }
+      }),
+    )
+
+    // Helper: find all quoted .yml/.yaml strings in text, fetch each, replace with data: URIs.
+    // Resolves relative URLs against baseUrl (which matches how fetch() resolves them at runtime).
+    const inlineYamlRefs = async (text, baseUrl) => {
+      let result = text
+      for (const [fullMatch, quote, urlStr] of [...text.matchAll(/(['"])([^'"]*\.ya?ml)\1/g)]) {
+        if (urlStr.startsWith('data:')) continue
+        try {
+          const url = new URL(urlStr, baseUrl)
+          const content = await fetch(url).then(r => r.text())
+          const bytes = new TextEncoder().encode(content)
+          const binary = Array.from(bytes, b => String.fromCharCode(b)).join('')
+          result = result.replaceAll(fullMatch, quote + 'data:text/yaml;base64,' + btoa(binary) + quote)
+        } catch (e) {
+          console.warn('Export HTML: failed to inline YAML:', urlStr, e)
+        }
+      }
+      return result
+    }
+
+    // Inline YAML refs in the bundle itself — this covers the defaultApply default value
+    // ('../assets/taiwan.yml') which lives inside generateMaps(), not in the user's script
+    bundleText = await inlineYamlRefs(bundleText, location.href)
+
+    // Rewrite &lt;script type="module">: strip the dumbymap import line, prepend bundle,
+    // and inline any YAML refs in the user's script too (custom defaultApply values)
+    for (const s of [...doc.querySelectorAll('script[type="module"]')]) {
+      let code = s.textContent
+        .replace(/^\s*import\s+\{[^}]*\}\s+from\s+['"][^'"]*dumbymap[^'"]*['"]\s*;?\n?/gm, '')
+      code = await inlineYamlRefs(code, location.href)
+      s.textContent = bundleText + '\n' + code
+    }
+
+    // Serialize and save
+    const html = '&lt;!DOCTYPE html>\n' + doc.documentElement.outerHTML
+    const blob = new Blob([html], { type: 'text/html' })
+
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: 'document.html',
+          types: [{ description: 'HTML', accept: { 'text/html': ['.html'] } }],
+        })
+        const writable = await handle.createWritable()
+        await writable.write(blob)
+        await writable.close()
+      } catch (e) {
+        if (e.name !== 'AbortError') throw e
+      }
+    } else {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = 'document.html'
+      a.click()
+      URL.revokeObjectURL(a.href)
+    }
+  },
+})
+
+/**
+ * exportFolder. Folder containing export actions.
+ *
+ * @param {Object} dumbymap
+ */
+export const exportFolder = (dumbymap) => Folder({
+  text: 'Export',
+  items: [
+    exportMarkdown(dumbymap),
+    exportHtml(),
+  ],
+})
+
+/**
+ * geocodingResult.
+ *
+ * @param {Array&lt;Number[]>} bounds - boundingbox in format: [minLon, minLat, maxLon, maxLat]
+ * @param {Function} callback
+ */
+export const geocodingResult = (bounds, callback) => (result) => {
+  // Click handler: mark item as selected and invoke caller callback with a geo-scheme anchor
+  const item = Item({
+    text: result.display_name,
+    onclick: (e) => {
+      e.target.classList.add('clicked')
+
+      const a = document.createElement('a')
+      a.href = `geo:${result.lat},${result.lon}` +
+        `?name=${result.name}` +
+        `&amp;osm=${result.osm_type}/${result.osm_id}`
+      a.title = result.display_name
+      callback(a)
+    },
+  })
+
+  // Place a temporary circle marker on each map for this result
+  const xy = [result.lon, result.lat]
+  const markers = getMarkersFromMaps(xy, {
+    type: 'circle',
+    title: result.display_name,
+  })
+
+  // Bounding box of this individual result (for the final zoom step)
+  const bbox = result.boundingbox
+  const resultBounds = [[bbox[2], bbox[0]], [bbox[3], bbox[1]]]
+
+  // Animate the map camera through: all-results overview → result centre → result bbox
+  item.onmouseover = () => {
+    markers.forEach(async marker => {
+      const renderer = marker.closest('.mapclay')?.renderer
+      await renderer.updateCamera({ bounds, duration: 1000, animation: true, padding: 20 })
+      await renderer.updateCamera({ center: xy, duration: 600, animation: true })
+      await renderer.updateCamera({ bounds: resultBounds, duration: 1500, animation: true, padding: 20 })
+    })
+  }
+
+  // Remove preview markers when the menu closes, unless the user clicked this item
+  setTimeout(() => {
+    onRemove(item.closest('.menu'), () => {
+      if (item.classList.contains('clicked')) return
+
+      markers.forEach(marker => marker.remove())
+    }, 100)
+  })
+
+  return item
+}
+</code></pre>
+        </article>
+    </section>
+
+
+
+
+</div>
+
+<nav>
+    <h2><a href="index.html">Home</a></h2><h3>Modules</h3><ul><li><a href="module-marker.html">marker</a></li></ul><h3>Classes</h3><ul><li><a href="Layout.html">Layout</a></li><li><a href="Overlay.html">Overlay</a></li><li><a href="SideBySide.html">SideBySide</a></li><li><a href="Sticky.html">Sticky</a></li></ul><h3>Global</h3><ul><li><a href="global.html#Folder">Folder</a></li><li><a href="global.html#Item">Item</a></li><li><a href="global.html#Suggestion">Suggestion</a></li><li><a href="global.html#addDraggable">addDraggable</a></li><li><a href="global.html#addGeoLink">addGeoLink</a></li><li><a href="global.html#addGeoLinkByDrag">addGeoLinkByDrag</a></li><li><a href="global.html#addGeoSchemeByText">addGeoSchemeByText</a></li><li><a href="global.html#addLinkbyGeocoding">addLinkbyGeocoding</a></li><li><a href="global.html#addMarker">addMarker</a></li><li><a href="global.html#addMarkerByPoint">addMarkerByPoint</a></li><li><a href="global.html#addRefLink">addRefLink</a></li><li><a href="global.html#animateRectTransition">animateRectTransition</a></li><li><a href="global.html#assignMapId">assignMapId</a></li><li><a href="global.html#buildDumbymap">buildDumbymap</a></li><li><a href="global.html#coordPattern">coordPattern</a></li><li><a href="global.html#createModal">createModal</a></li><li><a href="global.html#createShowcase">createShowcase</a></li><li><a href="global.html#debounce">debounce</a></li><li><a href="global.html#defaultLayouts">defaultLayouts</a></li><li><a href="global.html#defaultRender">defaultRender</a></li><li><a href="global.html#editMap">editMap</a></li><li><a href="global.html#editMapByRawText">editMapByRawText</a></li><li><a href="global.html#exportFolder">exportFolder</a></li><li><a href="global.html#exportHtml">exportHtml</a></li><li><a href="global.html#exportMarkdown">exportMarkdown</a></li><li><a href="global.html#fetchDefaultAliases">fetchDefaultAliases</a></li><li><a href="global.html#focusDelay">focusDelay</a></li><li><a href="global.html#focusNextBlock">focusNextBlock</a></li><li><a href="global.html#focusNextMap">focusNextMap</a></li><li><a href="global.html#full2Half">full2Half</a></li><li><a href="global.html#generateMaps">generateMaps</a></li><li><a href="global.html#geocodingResult">geocodingResult</a></li><li><a href="global.html#getCommonAncestor">getCommonAncestor</a></li><li><a href="global.html#getCoordinatesByPixels">getCoordinatesByPixels</a></li><li><a href="global.html#getMarkersByGeoLink">getMarkersByGeoLink</a></li><li><a href="global.html#getMarkersFromMaps">getMarkersFromMaps</a></li><li><a href="global.html#htmlToMd">htmlToMd</a></li><li><a href="global.html#insideParent">insideParent</a></li><li><a href="global.html#insideWindow">insideWindow</a></li><li><a href="global.html#isAnchorVisible">isAnchorVisible</a></li><li><a href="global.html#mapBlockSelector">mapBlockSelector</a></li><li><a href="global.html#mapCache">mapCache</a></li><li><a href="global.html#md2dumbyBlocks">md2dumbyBlocks</a></li><li><a href="global.html#onRemove">onRemove</a></li><li><a href="global.html#pickBlockItem">pickBlockItem</a></li><li><a href="global.html#pickLayoutItem">pickLayoutItem</a></li><li><a href="global.html#pickMapItem">pickMapItem</a></li><li><a href="global.html#printObject">printObject</a></li><li><a href="global.html#removeBlockFocus">removeBlockFocus</a></li><li><a href="global.html#removeLeaderLines">removeLeaderLines</a></li><li><a href="global.html#renderResults">renderResults</a></li><li><a href="global.html#replaceTextNodes">replaceTextNodes</a></li><li><a href="global.html#restoreCamera">restoreCamera</a></li><li><a href="global.html#scrollToBlock">scrollToBlock</a></li><li><a href="global.html#setGeoLinkType">setGeoLinkType</a></li><li><a href="global.html#setGeoLinkTypeItem">setGeoLinkTypeItem</a></li><li><a href="global.html#setLeaderLineType">setLeaderLineType</a></li><li><a href="global.html#setupBlockEdit">setupBlockEdit</a></li><li><a href="global.html#setupChildObserver">setupChildObserver</a></li><li><a href="global.html#setupContainer">setupContainer</a></li><li><a href="global.html#setupContentObserver">setupContentObserver</a></li><li><a href="global.html#setupContextMenu">setupContextMenu</a></li><li><a href="global.html#setupFileDrop">setupFileDrop</a></li><li><a href="global.html#setupKeybindings">setupKeybindings</a></li><li><a href="global.html#setupLayoutObserver">setupLayoutObserver</a></li><li><a href="global.html#setupMouseDrag">setupMouseDrag</a></li><li><a href="global.html#shiftByWindow">shiftByWindow</a></li><li><a href="global.html#simplePlaceholder">simplePlaceholder</a></li><li><a href="global.html#splitMd">splitMd</a></li><li><a href="global.html#switchToNextLayout">switchToNextLayout</a></li><li><a href="global.html#throttle">throttle</a></li><li><a href="global.html#toggleBlockFocus">toggleBlockFocus</a></li><li><a href="global.html#toggleMapFocus">toggleMapFocus</a></li><li><a href="global.html#updateAttributeByStep">updateAttributeByStep</a></li><li><a href="global.html#updateGeoSchemeByCRS">updateGeoSchemeByCRS</a></li><li><a href="global.html#updateMapCameraByMarker">updateMapCameraByMarker</a></li></ul>
+</nav>
+
+<br class="clear">
+
+<footer>
+    Documentation generated by <a href="https://github.com/jsdoc/jsdoc">JSDoc 4.0.5</a> on Thu Nov 19 2026 15:25:38 GMT-0400 (Atlantic Standard Time)
+</footer>
+
+<script> prettyPrint(); </script>
+<script src="scripts/linenumber.js"> </script>
+</body>
+</html>
